@@ -137,6 +137,7 @@ FastAPI 自带 Swagger UI，公网可达（Cloudflare 隧道）：
 | `POST /api/v1/admin/exec-many` | **多 run/多 agent/全部在线执行**：`{"run_ids":[1,2],...}` / `{"agent_ids":[...],...}` / `{"all_online":true,...}` |
 | `GET /api/v1/admin/tasks/{task_id}` | 轮询任务结果（exec 结果在 `result.output`） |
 | `GET /api/v1/admin/logs/{LOG_TOKEN}`（**不在 Swagger**） | 专用 access.log 查询：`?lines=&q=&path=&since=&file=`；认证走 `LOG_VIEW_TOKEN`（路径 token，与 ADMIN 开关解耦，未配置则 404） |
+| `POST /api/v1/admin/cancel` | **停止 run**：`{"run_id":N}` / `{"run_ids":[...]}` / `{"all_in_progress":true}` → GitHub cancel（生命周期终止主路径，agent 无关） |
 
 ## 5.6 访问日志（含轮转）
 
