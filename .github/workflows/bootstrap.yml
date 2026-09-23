@@ -34,17 +34,15 @@ jobs:
 
       - name: Configure MCP (shell-mcp)
         run: |
-          cd ~
           python3 -m venv /home/runner/mcp-venv
           /home/runner/mcp-venv/bin/python -m pip install "mcp==2.2.0" uvicorn starlette
-          cd ~
-          curl -L https://github.com/pornnewbee/socks5-for-serv00/raw/refs/heads/main/Configs/MCP/shell-mcp.service -o shell-mcp.service
-          curl -L https://github.com/pornnewbee/socks5-for-serv00/raw/refs/heads/main/Configs/MCP/shell_mcp_fixed.py -o shell_mcp.py
-          sudo mv shell-mcp.service /etc/systemd/system/
+          # MCP 代码 vendor 在本仓库 mcp/，不依赖外部下载
+          sudo cp mcp/shell_mcp.py /home/runner/shell_mcp.py
+          sudo cp mcp/shell-mcp.service /etc/systemd/system/
           sudo systemctl daemon-reload
           sudo systemctl enable shell-mcp
           sudo systemctl start shell-mcp
-          sudo systemctl status shell-mcp --no-pager
+          sudo systemctl status shell-mcp --no-pager | head -8
 
       - name: Install Oracle Agent
         env:

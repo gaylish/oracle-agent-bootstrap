@@ -40,8 +40,10 @@ sudo -u oracle-agent bash -c 'cd /opt/oracle-agent && venv/bin/python -m server.
 |---|---|
 | `.github/workflows/bootstrap.yml` | 手动触发的 bootstrap 工作流 |
 | `agent/` | Oracle Agent 客户端（纯标准库，零依赖） |
+| `mcp/`   | shell-mcp 服务端（HTTP/SSE，127.0.0.1:6942），vendor 自 `pornnewbee/socks5-for-serv00`（本人仓库），原样保留 |
 
 ## 注意
 
 - 这是"一次性 Bootstrap"通道：长期控制走 Oracle Agent 任务协议，不要把业务脚本堆进这个仓库
-- workflow 里直接写死了 `runner:runner` 密码与公开的 MCP 安装源，仅用于自有 Runner 初始化
+- workflow 里直接写死 `runner:runner` SSH 密码，仅用于自有 GitHub Runner 初始化
+- MCP（`mcp/`）为 vendor 版本：**原样保留，不主动改**；上游如需更新，手动同步 `mcp/shell_mcp.py`，并同步 venv 依赖版本（`mcp==2.2.0` 等，见 workflow）
