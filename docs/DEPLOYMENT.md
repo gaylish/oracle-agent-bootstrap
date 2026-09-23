@@ -118,7 +118,7 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 
 ## 8. 待办候选
 
-- `agentctl` 封装（`ssh <runner>`、批处理等）
+- **Agent Stream v1.1（反向 MCP 通道）**：协议已定（协议附录 C）；实现 Runner 侧 `mcp_adapter.py` + Oracle 侧 MCP Gateway，让 MCP 复用 Runner 出站连接
 - Cloudflare Access Service Token 加固（Runner 端带 header）
 - 协议 `ack` 租约语义、重投递上限（见协议 §5.2）
 - 新任务类型：`install_cloudflare` / `configure_tunnel` / `install_mcp` / `install_docker` 等（协议 §6.2）

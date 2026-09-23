@@ -269,3 +269,138 @@ GitHub 仓库只负责"把一个最小可用 Runner 变出来"：
 
 **禁止**放入仓库：SSH 操作全集、Cloudflare Tunnel 配置、业务脚本、长期任务队列、Runner 长期管理逻辑。
 这些一律作为 Oracle 下发的任务存在（`install_cloudflare`、`configure_tunnel`、`exec`…）。
+---
+
+## 11. 附录 C：Agent Stream v1.1（反向 MCP 通道）
+
+> 新增能力，**不修改** v1 现有 5 个接口（register/heartbeat/pull/result/report）。
+> 设计目标：Runner 不开放入站、不建 Cloudflare Tunnel，也能被 Oracle 当作**实时交互通道**使用（当前用途：MCP）。
+
+### 11.1 传输层定义（重要修正）
+
+传输是**一条长连接的流式 HTTP 请求/响应**，不是"HTTP 双向"：
+
+```
+Runner ──POST /api/v1/connect──► Oracle
+          │  请求体 = 上行流（chunked）   hello / ping / mcp_response
+          ▼
+Oracle   ──响应体 = 下行流（NDJSON）──► Runner
+                    mcp_request / ping / close
+```
+
+- **帧编码**：NDJSON——每条消息一个 JSON 对象，`\n` 分隔。
+- **上行**：Runner 向请求体持续写帧；**下行**：Server 向响应体持续推帧。
+- **性质**：HTTP 本身是 request/response；这里的"双向"是靠**长连接 + 两端各自流**实现的，必须显式处理代理缓冲、空闲超时、断线重连（见 §11.5）。
+
+### 11.2 端点
+
+```
+POST /api/v1/connect
+Authorization: Bearer <token>        # 沿用 v1 认证，不另造
+Content-Type: application/x-ndjson
+```
+
+- token 无效：立即 `401/403`（不建立流）。
+- 同一个 `agent_id` 同时只允许一条活跃流；新连接成功后，Server **关闭旧流**（latest-wins，简化断线重连竞态）。
+- 建立流的会话标识由 Oracle 生成：`stream_id`（仅用于日志/诊断，不是认证凭据）。
+
+### 11.3 帧定义
+
+所有帧共字段：`type`、`id?`（仅请求/响应类需要）。
+
+**Runner → Oracle**
+
+| type | 字段 | 说明 |
+|---|---|---|
+| `hello` | `agent_id` | 连接建立后**第一条**必须是 hello；Server 校验后回 `hello_ack` |
+| `ping` | `ts` | 上行心跳（见 §11.5） |
+| `mcp_response` | `id`、`result?`、`error?` | 必须与收到的 `mcp_request.id` 完全一致 |
+
+**Oracle → Runner**
+
+| type | 字段 | 说明 |
+|---|---|---|
+| `hello_ack` | `stream_id`、`heartbeat_sec` | Server 确认流建立，并告知心跳要求 |
+| `mcp_request` | `id`、`method`、`params?`、`timeout_ms?` | 逻辑 MCP 方法调用（`tools/*`、`resources/*`、`prompts/*`、`initialize`、`ping`） |
+| `ping` | `ts` | 下行心跳 |
+| `close` | `reason` | 优雅关闭（运维/升级/限流）；Runner 可自行决定是否重连 |
+
+示例：
+
+```json
+{"type":"hello","agent_id":"runner-01"}
+{"type":"hello_ack","stream_id":"s-9f31","heartbeat_sec":30}
+{"type":"mcp_request","id":"m1","method":"tools/list","params":{},"timeout_ms":30000}
+{"type":"mcp_response","id":"m1","result":{"content":[{"type":"text","text":"{\"stdout\":\"...\"}"}]}}
+{"type":"close","reason":"operator_reload"}
+```
+
+### 11.4 并发与 ID 规则
+
+- 每个 `mcp_request` 由 **Oracle 生成唯一 `id`**（连接内唯一即可）；Runner **原样回显**。
+- 允许并发 multiplex：Oracle 可在同一流上同时发出多个 `mcp_request`，Runner 按任意顺序回 `mcp_response`（无顺序保证，按 `id` 匹配）。
+- Runner 未发起请求式帧（v1.1）；未来若支持，必须使用 `r_` 前缀的 id 空间避免冲突。
+- 单个连接并发上限：默认 64（超出回 `mcp_error_response` code=`too_many_inflight`）。
+
+### 11.5 生命周期 / 心跳 / 超时 / 重连
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 上行心跳 | 每 `heartbeat_sec`（Server 在 hello_ack 下发，默认 30s） | Runner 必须发 `ping`；**任何上行帧都算活动** |
+| 下行活动 | Server 空闲 30s 发 `ping` | 任何下行帧也算活动 |
+| 静默判定 | 任一端 90s 未收到任何字节 | Server 关流；Runner 判定断线 |
+| Cloudflare | 空闲 100s 会断 | 心跳 30s < 100s，且有 90s 静默判定兜底 |
+| 断线重连 | 指数退避 1s→2s→4s…上限 60s + 随机抖动 | 重连后必须重发 `hello`；过程与"latest-wins"配合无竞态 |
+| 断线时在途请求 | Oracle 对未收 `mcp_response` 的在途 `mcp_request` 回网关侧 `error(code=connection_lost)` | 不持久化；MCP 是实时通道，不落任务队列 |
+
+### 11.6 错误帧
+
+协议级错误：
+
+```json
+{"type":"error","code":"bad_frame","message":"invalid JSON line"}
+{"type":"error","code":"unknown_type","message":"..."}
+```
+
+规则：收到畸形帧/未知 type → 回 `error`；**连续两次协议错误 → 关流**。MCP 方法错误（含超时、适配器不可达、后端错误）：
+
+```json
+{"type":"mcp_error_response","id":"<原 id>","error":{"code":"...","message":"..."}}
+```
+
+code 枚举：`unknown_method | timeout | backend_unreachable | too_many_inflight | internal_error | connection_lost`（`connection_lost` 由 Gateway 侧合成）。
+
+### 11.7 Runner 侧组件（协议外约定，实现时照此）
+
+```
+Agent Stream（隶属于 Oracle Agent）
+     │
+     ▼
+mcp_adapter.py      ← 桥接，纯 stdlib；不实现任何 MCP 工具
+     │  逻辑方法调用 → 本地 MCP 会话
+     ▼
+127.0.0.1:6942/mcp  ← 现有 shell-mcp（HTTP/SSE），**不改动**
+```
+
+- Adapter 自行管理到本地 6942 的 MCP 会话（initialize → 复用会话）。
+- `mcp_response.result` = 本地 MCP 返回的原始结果（Gateway 负责包装成客户端所需格式）。
+
+### 11.8 Oracle 侧组件（协议外约定）
+
+```
+MCP Client（Cline / TG）
+     │
+     ▼  https://mcp-gateway.femboy.us.ci/mcp/<runner_id>   ← Cloudflare 只护这一层
+MCP Gateway（VPS）
+     │  initialize → 认证/路由 → 绑定 runner 流
+     ▼
+Runner connection（/api/v1/connect）
+```
+
+- 路由：路径显式指定目标 runner（`/mcp/runner-01`）；或由 Gateway 配置/认证身份决定。
+- Gateway 与 Runner 流之间是 1:1 绑定；客户端断开不销毁 runner 流（可再连）。
+
+### 11.9 兼容性
+
+- `/pull`、`/result`、`/report` 及 Task API 全部保留：**Task = 生命周期/后台任务**，**Stream = 实时交互**，职责分离。
+- 本附录是 v1 的**增量**，服务端与 Agent 未实现前不影响 v1 运行。
