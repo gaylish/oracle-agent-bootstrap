@@ -80,6 +80,8 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 - Swagger UI：`https://oracle-agent.femboy.us.ci/docs`；OpenAPI：`/openapi.json`
 - 只读查询端点（admin 标签），需 `Authorization: Bearer <ORACLE_ADMIN_TOKEN>`
 - 服务端配置：`/etc/default/oracle-agent`（root 600）——`ORACLE_ADMIN_TOKEN`、`GH_OWNER/GH_REPO/GH_PAT`（供 `admin/github/workflows` 查 GitHub 正在跑的 workflow）
+- **认证开关**：`ADMIN_AUTH_ENABLED`=`true`(默认，需 Bearer)/`false`(关闭，调试用；公网暴露时务必开启)
+- **触发 run**：`POST /api/v1/admin/trigger` `{"count": N}`（默认 1，上限 20）
 - 本地查看 token：`sudo grep ORACLE_ADMIN_TOKEN /etc/default/oracle-agent`
 - 部署说明：`server/api/admin.py` 挂载于 `main.py`；`docs/sample-imds-gh-runner.json` 为真实 GH Runner 的 IMDS 样本
 
