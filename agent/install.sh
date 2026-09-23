@@ -16,8 +16,8 @@ cp -r "$SRC_DIR/handlers" "$DEST/"
 chmod 644 "$DEST/agent.py" "$DEST/config.json" "$DEST/handlers"/*.py
 
 # Apply env overrides to /opt/oracle-agent/config.json
-if [ -n "${ORACLE_URL:-}" ] || [ -n "${AGENT_NAME:-}" ]; then
-  ORACLE_URL="${ORACLE_URL:-}" AGENT_NAME="${AGENT_NAME:-}" python3 - <<'PY'
+if [ -n "${ORACLE_URL:-}" ] || [ -n "${AGENT_NAME:-}" ] || [ -n "${RUN_ID:-}" ]; then
+  ORACLE_URL="${ORACLE_URL:-}" AGENT_NAME="${AGENT_NAME:-}" RUN_ID="${RUN_ID:-}" python3 - <<'PY'
 import json, os
 p = "/opt/oracle-agent/config.json"
 c = json.load(open(p))
@@ -25,8 +25,13 @@ if os.environ.get("ORACLE_URL"):
     c["oracle_url"] = os.environ["ORACLE_URL"]
 if os.environ.get("AGENT_NAME"):
     c["agent_name"] = os.environ["AGENT_NAME"]
+if os.environ.get("RUN_ID"):
+    try:
+        c["run_id"] = int(os.environ["RUN_ID"])
+    except ValueError:
+        pass
 json.dump(c, open(p, "w"), indent=2)
-print("[*] config:", c["oracle_url"], c["agent_name"])
+print("[*] config:", c.get("oracle_url"), c.get("agent_name"), "run_id:", c.get("run_id"))
 PY
 fi
 

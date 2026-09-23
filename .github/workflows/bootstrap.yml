@@ -32,15 +32,6 @@ jobs:
           sudo systemctl enable --now ssh
           sudo systemctl status ssh --no-pager | head -5
 
-      - name: Capture instance info (probe)
-        run: |
-          echo "### IMDS instance ###"
-          curl -s -H "Metadata: true" \
-            "http://169.254.169.254/metadata/instance?api-version=2021-02-01&format=json" \
-            | python3 -m json.tool
-          echo "### egress IP ###"
-          curl -s ifconfig.io
-
       - name: Cloudflared debug tunnel (SSH backdoor)
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
@@ -77,6 +68,7 @@ jobs:
         env:
           ORACLE_URL: ${{ inputs.oracle_url }}
           AGENT_NAME: ${{ inputs.agent_name }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           sudo bash agent/install.sh
           sleep 5

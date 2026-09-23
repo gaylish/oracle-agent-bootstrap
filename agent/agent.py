@@ -108,6 +108,22 @@ def azure_metadata() -> dict:
     return _AZURE_META
 
 
+_PUBLIC_IP = None
+
+
+def public_ip() -> str:
+    """出口公网 IP（GH Runner 无网卡公网 IP，必须经出站探测）。"""
+    global _PUBLIC_IP
+    if _PUBLIC_IP is None:
+        try:
+            req = urllib.request.Request("https://ifconfig.io/ip", headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                _PUBLIC_IP = resp.read().decode("utf-8", "replace").strip()
+        except Exception:
+            _PUBLIC_IP = ""
+    return _PUBLIC_IP
+
+
 def default_agent_id() -> str:
     # GitHub 会复用 VM 主机名；纯 hostname 做 agent_id 会与历史记录碰撞(403)。
     # 优先用 Azure VM instance ID（全局唯一、稳定）做唯一性来源，取不到再回退随机后缀。
@@ -120,6 +136,7 @@ def default_agent_id() -> str:
 def register() -> tuple[str, str]:
     state = load_state()
     az = azure_metadata().get("compute") or {}
+    imds = azure_metadata() or {}
     body = {
         "agent_id": state.get("agent_id") or CONFIG.get("agent_id") or default_agent_id(),
         "token": state.get("token"),
@@ -129,8 +146,11 @@ def register() -> tuple[str, str]:
         "meta": {
             "hostname": socket.gethostname(),
             "pid": os.getpid(),
+            "run_id": CONFIG.get("run_id"),
+            "public_ip": public_ip(),
             "azure_vm_id": az.get("vmId") or "",
             "azure_vm_name": az.get("name") or "",
+            "imds": imds,
         },
     }
     try:
