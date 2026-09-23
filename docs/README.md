@@ -39,6 +39,8 @@
 | ② 主动轮询 | Agent 出站 pull/heartbeat，Oracle 下发任务 | 长轮询 + 心跳 |
 | ③ 能力扩展 | Oracle 决定安装 Cloudflare Connector / Docker 等 | 任务下发（install_* 预留） |
 
+**生命周期终止（GH Runner）**：主路径 = **Oracle 用 PAT 调 GitHub API cancel 该 run**（agent 死透也能终止，VM 由 GitHub 可靠回收）；agent 侧 `shutdown` 任务保留，供 VPS/裸机等无 GitHub 控制的节点使用。
+
 ---
 
 ## 2. 目录结构
@@ -127,9 +129,9 @@ cd agent && python3 agent.py          # 自动 register，写 state.json(600)
 
 - **协议 v1 已稳定**：`register / heartbeat / pull / result / report` 五个接口。
 - **任务类型**：`test`、`exec`、`shutdown` 已实现；`install_cloudflare`、`configure_tunnel`、`install_mcp`、`install_docker`、`configure_ssh`、`start_service`/`stop_service` 预留（协议 §6.2）。
-- **已验证**：VPS 本地闭环、公网隧道闭环、真实 GitHub Actions Runner 全链路（含 Oracle 关机结束生命周期）——记录见 DEPLOYMENT.md。
+- **已验证**：VPS 本地闭环、公网隧道闭环、真实 GitHub Actions Runner 全链路（agent `shutdown` 与 GitHub cancel 两种终止方式均验证）——记录见 DEPLOYMENT.md。
 - **待办候选**：
-  - **Agent Stream v1.1（反向 MCP 通道）**：协议已定（协议文档附录 C）；待实现 `mcp_adapter.py`（Runner 侧桥）+ MCP Gateway（Oracle 侧），让 MCP 走 Runner 出站连接，不再需要每 Runner 一条 Cloudflare Tunnel
+  - **Agent Stream（统一反向控制通道）**：协议已定（协议文档附录 C v1.2）；一条出站连接承载 Control Plane（exec/shutdown/install…）+ MCP Plane（mcp 只是其一），待实现 Agent 侧 Stream 主循环 + `mcp_adapter.py` + Oracle 侧 MCP Gateway；Runner 不再需要 Cloudflare Tunnel
   - agentctl 封装（`ssh <runner>` 等）
   - Cloudflare Access Service Token 加固
   - `ack` 租约语义细化

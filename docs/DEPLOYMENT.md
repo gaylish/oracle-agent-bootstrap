@@ -75,6 +75,17 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 #    Public Hostname: oracle-agent.femboy.us.ci → http://localhost:8700
 ```
 
+## 6. Runner 生命周期终止（推荐）
+
+**GitHub-hosted Runner 主路径**：Oracle 用 PAT 调 GitHub API 取消 run，不依赖 agent 是否存活，VM 由 GitHub 回收：
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/<owner>/<repo>/actions/runs/<run_id>/cancel
+```
+
+agent 侧 `shutdown` 任务（`{"delay_sec": 60}`，先回报再断电）保留，用于 VPS/裸机等无 GitHub 控制的节点。
+
 ## 6. 验证记录（2026-09-23）
 
 ### 6.1 VPS 本地闭环
@@ -118,7 +129,14 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 
 ## 8. 待办候选
 
-- **Agent Stream v1.1（反向 MCP 通道）**：协议已定（协议附录 C）；实现 Runner 侧 `mcp_adapter.py` + Oracle 侧 MCP Gateway，让 MCP 复用 Runner 出站连接
+- **Agent Stream（统一反向控制通道）**：协议已定（协议附录 C v1.2）；实现 stream 主循环 + `mcp_adapter.py` + MCP Gateway，exec/mcp/shutdown 等全走 Runner 单条出站连接
 - Cloudflare Access Service Token 加固（Runner 端带 header）
 - 协议 `ack` 租约语义、重投递上限（见协议 §5.2）
 - 新任务类型：`install_cloudflare` / `configure_tunnel` / `install_mcp` / `install_docker` 等（协议 §6.2）
+### 6.4 修复后全链路（2026-09-23，agent 加 Azure 身份 + 网络异常兜底）
+
+- Azure 身份：`azure_vm_id=e3af8cdf-91e7-42a1-ba1a-6e4ef49e0ebc`，agent_id=`runner-runnervmtr4k5-e3af8cdf`（= hostname + vmId 前 8 位），register meta 上报 vm_id / vm_name
+- 5 个 workflow 步骤全绿；test/exec 成功；shell-mcp active
+- 稳定性：agent 持续心跳 5+ 分钟无 crash（修复 TimeoutError 崩溃循环后）
+- 生命周期：Oracle 下发 `shutdown` → success（shutdown-issued, delay 60s）→ VM 断电 → GH job `completed(failure)`（预期）
+- 结论：**GH Runner 终止主路径建议用 GitHub cancel**（PAT，agent 无关）；agent `shutdown` 供非 GH 节点

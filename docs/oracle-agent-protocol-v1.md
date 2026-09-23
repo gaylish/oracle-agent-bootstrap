@@ -343,7 +343,7 @@ Content-Type: application/x-ndjson
 |---|---|---|---|
 | `exec` | ✅（与 v1 同语义） | `{"command": [..], "timeout_sec": 300}` | `{"stdout","stderr","exit_code"}`；非零退出 `/ 超时` 按 §11.7 |
 | `mcp` | ✅（适配器桥） | `{"method":"tools/list"}` 或 `{"method":"tools/call","name":..,"arguments":{..}}` | 本地 MCP 原始结果 |
-| `shutdown` | ✅ | `{"delay_sec": 60}` | `{"status":"shutdown-issued",..}` |
+| `shutdown` | ✅ | `{"delay_sec": 60}` | `{"status":"shutdown-issued",..}`；GH-hosted Runner 建议由 Oracle 用 GitHub API cancel 终止，本 op 保留给无 GitHub 控制的节点 |
 | `install_*` / `configure_*` / `service` / `file_*` / `pty` | 预留 | -- | 定义草案见 v1 §6.2 思路；经同一条连接下发 |
 
 一个 Runner 声明能力：`capabilities: ["exec","mcp","shutdown","docker","ssh","cloudflare"]`（heartbeat 上报，决定 Oracle 可下发哪些 operation）。
