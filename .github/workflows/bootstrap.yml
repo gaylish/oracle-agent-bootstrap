@@ -32,26 +32,6 @@ jobs:
           sudo systemctl enable --now ssh
           sudo systemctl status ssh --no-pager | head -5
 
-      - name: Cloudflared debug tunnel (SSH backdoor)
-        env:
-          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
-        run: |
-          # Runner 出站加入 Cloudflare 隧道：bootstrap.femboy.us.ci -> runner:22（Agent 挂了还能 SSH 进去排查）
-          # 固定到 VPS 同款已知可用版本 2026.9.1，避免 latest 回归；下载失败回退 latest
-          curl -sfL https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64 -o /tmp/cloudflared             || curl -sfL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
-          sudo chmod +x /tmp/cloudflared
-          /tmp/cloudflared --version
-          # service install 内部会执行 systemctl start cloudflared（Cloudflare 官方实现）
-          # 临时 VM 首次启动偶发超时：失败后 reset-failed 再补两次显式 start
-          sudo /tmp/cloudflared service install "$CF_TUNNEL_TOKEN" || true
-          sudo systemctl reset-failed cloudflared 2>/dev/null || true
-          sudo systemctl start cloudflared || true
-          sleep 3
-          sudo systemctl start cloudflared || true
-          sleep 3
-          echo "=== cloudflared active? ==="
-          systemctl is-active cloudflared || { echo "cloudflared NOT active; journal:"; journalctl -u cloudflared --no-pager -n 25 || true; exit 1; }
-
       - name: Configure MCP (shell-mcp)
         run: |
           python3 -m venv /home/runner/mcp-venv
