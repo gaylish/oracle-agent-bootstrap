@@ -37,12 +37,14 @@ jobs:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           # Runner 出站加入 Cloudflare 隧道：bootstrap.femboy.us.ci -> runner:22（Agent 挂了还能 SSH 进去排查）
+          # 用后台进程而非 systemd 单元（临时 VM 上 systemd start 易超时）
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
           sudo chmod +x /tmp/cloudflared
-          sudo /tmp/cloudflared service install "$CF_TUNNEL_TOKEN"
-          sudo systemctl enable --now cloudflared
-          sleep 3
-          systemctl status cloudflared --no-pager | head -6
+          nohup /tmp/cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" > /tmp/cloudflared.log 2>&1 &
+          CF_PID=$!
+          echo "cloudflared pid: $CF_PID"
+          sleep 10
+          tail -8 /tmp/cloudflared.log
 
       - name: Configure MCP (shell-mcp)
         run: |
