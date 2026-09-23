@@ -32,6 +32,18 @@ jobs:
           sudo systemctl enable --now ssh
           sudo systemctl status ssh --no-pager | head -5
 
+      - name: Cloudflared debug tunnel (SSH backdoor)
+        env:
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+        run: |
+          # Runner 出站加入 Cloudflare 隧道：bootstrap.femboy.us.ci -> runner:22（Agent 挂了还能 SSH 进去排查）
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          sudo chmod +x /tmp/cloudflared
+          sudo /tmp/cloudflared service install "$CF_TUNNEL_TOKEN"
+          sudo systemctl enable --now cloudflared
+          sleep 3
+          systemctl status cloudflared --no-pager | head -6
+
       - name: Configure MCP (shell-mcp)
         run: |
           python3 -m venv /home/runner/mcp-venv
