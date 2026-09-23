@@ -83,6 +83,7 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 - **认证开关**：`ADMIN_AUTH_ENABLED`=`true`(默认，需 Bearer)/`false`(关闭，调试用；公网暴露时务必开启)
 - **触发 run**：`POST /api/v1/admin/trigger` `{"count": N}`（默认 1，上限 20）
 - **在 run 上执行命令**：`POST /api/v1/admin/exec`（单 run/agent）与 `POST /api/v1/admin/exec-many`（多 run / 多 agent / `all_online`）；结果经 `GET /api/v1/admin/tasks/{task_id}` 轮询
+- **访问日志**：`/opt/oracle-agent/server/data/access.log`（JSON lines；完整 headers + body + 时间，敏感头打码；RotatingFileHandler 10MB×5 轮转；默认跳过 agent 协议请求）
 - 本地查看 token：`sudo grep ORACLE_ADMIN_TOKEN /etc/default/oracle-agent`
 - 部署说明：`server/api/admin.py` 挂载于 `main.py`；`docs/sample-imds-gh-runner.json` 为真实 GH Runner 的 IMDS 样本
 
