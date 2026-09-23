@@ -50,7 +50,9 @@ jobs:
           AGENT_NAME: ${{ inputs.agent_name }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          sudo bash agent/install.sh
+          # 重要：sudo 会重置环境变量，RUN_ID/ORACLE_URL/AGENT_NAME 必须显式透传，
+          # 否则 run 记录（runs 表 / run_id）会丢
+          sudo RUN_ID="$RUN_ID" ORACLE_URL="$ORACLE_URL" AGENT_NAME="$AGENT_NAME" bash agent/install.sh
           sleep 5
           systemctl status oracle-agent --no-pager | head -8
           python3 -c "import json; print('agent_id:', json.load(open('/opt/oracle-agent/state.json'))['agent_id'])" 2>/dev/null \
