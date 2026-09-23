@@ -270,137 +270,149 @@ GitHub 仓库只负责"把一个最小可用 Runner 变出来"：
 **禁止**放入仓库：SSH 操作全集、Cloudflare Tunnel 配置、业务脚本、长期任务队列、Runner 长期管理逻辑。
 这些一律作为 Oracle 下发的任务存在（`install_cloudflare`、`configure_tunnel`、`exec`…）。
 ---
+---
 
-## 11. 附录 C：Agent Stream v1.1（反向 MCP 通道）
+## 11. 附录 C：Agent Stream — 统一反向控制通道（v1.2）
 
-> 新增能力，**不修改** v1 现有 5 个接口（register/heartbeat/pull/result/report）。
-> 设计目标：Runner 不开放入站、不建 Cloudflare Tunnel，也能被 Oracle 当作**实时交互通道**使用（当前用途：MCP）。
+> **本条取代早期"反向 MCP 专用通道"草案**（当时仅规划 MCP 一种用途）。Agent Stream 是 Runner 的**统一反向控制通道**：底层只有一条出站连接，逻辑上分为 **Control Plane**（exec/shutdown/install 等系统级操作）与 **MCP Plane**（调 Runner 本地已有 MCP 服务）。MCP 只是其中一种 operation。
+>
+> **目标**：Runner 无公网入站、无 Cloudflare Tunnel；所有 TCP 连接方向恒为 `Runner → Oracle`；Oracle 通过已建立连接反向发送请求。不把普通命令、关机、装软件包装成 MCP Tool——MCP 只负责"Runner 已存在的 MCP 服务"，Agent 自身负责节点生命周期与系统级控制。
 
-### 11.1 传输层定义（重要修正）
+### 11.1 传输层定义
 
-传输是**一条长连接的流式 HTTP 请求/响应**，不是"HTTP 双向"：
+一条长连接的**流式 HTTP 请求/响应**（不是"HTTP 双向"）：
 
 ```
 Runner ──POST /api/v1/connect──► Oracle
-          │  请求体 = 上行流（chunked）   hello / ping / mcp_response
+          │  请求体 = 上行流（chunked）   hello / response / ping / event
           ▼
 Oracle   ──响应体 = 下行流（NDJSON）──► Runner
-                    mcp_request / ping / close
+                    hello_ack / request / ping / close
 ```
 
 - **帧编码**：NDJSON——每条消息一个 JSON 对象，`\n` 分隔。
-- **上行**：Runner 向请求体持续写帧；**下行**：Server 向响应体持续推帧。
-- **性质**：HTTP 本身是 request/response；这里的"双向"是靠**长连接 + 两端各自流**实现的，必须显式处理代理缓冲、空闲超时、断线重连（见 §11.5）。
+- 双向各一条流，靠长连接承载；代理缓冲、空闲超时、断线重连显式定义（§11.6）。
 
 ### 11.2 端点
 
 ```
 POST /api/v1/connect
-Authorization: Bearer <token>        # 沿用 v1 认证，不另造
+Authorization: Bearer <token>        # 沿用 v1 认证
 Content-Type: application/x-ndjson
 ```
 
-- token 无效：立即 `401/403`（不建立流）。
-- 同一个 `agent_id` 同时只允许一条活跃流；新连接成功后，Server **关闭旧流**（latest-wins，简化断线重连竞态）。
-- 建立流的会话标识由 Oracle 生成：`stream_id`（仅用于日志/诊断，不是认证凭据）。
+- token 无效 → 立即 `401/403`，不建流。
+- 同一 `agent_id` 同时只允许一条活跃流；新连接成功后 Server **关闭旧流**（latest-wins，简化重连竞态）。
+- `stream_id` 由 Oracle 生成，仅诊断用。
 
 ### 11.3 帧定义
 
-所有帧共字段：`type`、`id?`（仅请求/响应类需要）。
+公共字段：`type`。
 
 **Runner → Oracle**
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `hello` | `agent_id` | 连接建立后**第一条**必须是 hello；Server 校验后回 `hello_ack` |
-| `ping` | `ts` | 上行心跳（见 §11.5） |
-| `mcp_response` | `id`、`result?`、`error?` | 必须与收到的 `mcp_request.id` 完全一致 |
+| `hello` | `agent_id` | 连接建立后第一条必须为 hello |
+| `response` | `id`、`status`、`result?`、`error?` | 响应某个 `request`，`id` 原样回显 |
+| `ping` | `ts` | 上行心跳 |
+| `event` | `event`、`data?`、`ts` | 异步事件（如 `capability_installed`、`tunnel_ready`）；与请求解耦 |
 
 **Oracle → Runner**
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `hello_ack` | `stream_id`、`heartbeat_sec` | Server 确认流建立，并告知心跳要求 |
-| `mcp_request` | `id`、`method`、`params?`、`timeout_ms?` | 逻辑 MCP 方法调用（`tools/*`、`resources/*`、`prompts/*`、`initialize`、`ping`） |
+| `hello_ack` | `stream_id`、`heartbeat_sec` | 确认流建立并下发心跳要求 |
+| `request` | `id`、`operation`、`params`、`timeout_ms?`、`durable?` | 一条操作请求 |
 | `ping` | `ts` | 下行心跳 |
-| `close` | `reason` | 优雅关闭（运维/升级/限流）；Runner 可自行决定是否重连 |
+| `close` | `reason` | 优雅关闭；Runner 可自行决定是否重连 |
 
-示例：
+`request` / `response` 示例：
 
 ```json
-{"type":"hello","agent_id":"runner-01"}
-{"type":"hello_ack","stream_id":"s-9f31","heartbeat_sec":30}
-{"type":"mcp_request","id":"m1","method":"tools/list","params":{},"timeout_ms":30000}
-{"type":"mcp_response","id":"m1","result":{"content":[{"type":"text","text":"{\"stdout\":\"...\"}"}]}}
-{"type":"close","reason":"operator_reload"}
+{"type":"request","id":"abc123","operation":"exec","params":{"command":["uname","-a"],"timeout_sec":30}}
+{"type":"response","id":"abc123","status":"success","result":{"stdout":"Linux vnic-1 6.17...\n","stderr":"","exit_code":0}}
+
+{"type":"request","id":"abc124","operation":"mcp","params":{"method":"tools/call","name":"read_file","arguments":{"path":"/etc/hostname"}},"timeout_ms":30000}
+{"type":"response","id":"abc124","status":"success","result":{"content":[{"type":"text","text":"vnic-1\n"}]}}
 ```
 
-### 11.4 并发与 ID 规则
+### 11.4 Operation 注册表
 
-- 每个 `mcp_request` 由 **Oracle 生成唯一 `id`**（连接内唯一即可）；Runner **原样回显**。
-- 允许并发 multiplex：Oracle 可在同一流上同时发出多个 `mcp_request`，Runner 按任意顺序回 `mcp_response`（无顺序保证，按 `id` 匹配）。
-- Runner 未发起请求式帧（v1.1）；未来若支持，必须使用 `r_` 前缀的 id 空间避免冲突。
-- 单个连接并发上限：默认 64（超出回 `mcp_error_response` code=`too_many_inflight`）。
+| operation | 已实现 | params | result / status 说明 |
+|---|---|---|---|
+| `exec` | ✅（与 v1 同语义） | `{"command": [..], "timeout_sec": 300}` | `{"stdout","stderr","exit_code"}`；非零退出 `/ 超时` 按 §11.7 |
+| `mcp` | ✅（适配器桥） | `{"method":"tools/list"}` 或 `{"method":"tools/call","name":..,"arguments":{..}}` | 本地 MCP 原始结果 |
+| `shutdown` | ✅ | `{"delay_sec": 60}` | `{"status":"shutdown-issued",..}` |
+| `install_*` / `configure_*` / `service` / `file_*` / `pty` | 预留 | -- | 定义草案见 v1 §6.2 思路；经同一条连接下发 |
 
-### 11.5 生命周期 / 心跳 / 超时 / 重连
+一个 Runner 声明能力：`capabilities: ["exec","mcp","shutdown","docker","ssh","cloudflare"]`（heartbeat 上报，决定 Oracle 可下发哪些 operation）。
+
+### 11.5 并发与 ID 规则
+
+- Oracle 为每个 `request` 生成唯一 `id`（连接内唯一），Runner 原样回显。
+- 并发 multiplex 允许；无顺序保证，按 `id` 匹配。
+- 并发上限默认 64（超出回 `error` code=`too_many_inflight`）。
+- Runner 侧发起的请求式帧 v1.2 暂不支持；未来若支持用 `r_` 前缀 id 空间。
+
+### 11.6 生命周期 / 心跳 / 超时 / 重连
 
 | 项 | 值 | 说明 |
 |---|---|---|
-| 上行心跳 | 每 `heartbeat_sec`（Server 在 hello_ack 下发，默认 30s） | Runner 必须发 `ping`；**任何上行帧都算活动** |
+| 上行心跳 | 每 `heartbeat_sec`（默认 30s） | 任何上行帧都算活动 |
 | 下行活动 | Server 空闲 30s 发 `ping` | 任何下行帧也算活动 |
-| 静默判定 | 任一端 90s 未收到任何字节 | Server 关流；Runner 判定断线 |
-| Cloudflare | 空闲 100s 会断 | 心跳 30s < 100s，且有 90s 静默判定兜底 |
-| 断线重连 | 指数退避 1s→2s→4s…上限 60s + 随机抖动 | 重连后必须重发 `hello`；过程与"latest-wins"配合无竞态 |
-| 断线时在途请求 | Oracle 对未收 `mcp_response` 的在途 `mcp_request` 回网关侧 `error(code=connection_lost)` | 不持久化；MCP 是实时通道，不落任务队列 |
+| 静默判定 | 任一端 90s 无字节 | Server 关流 / Runner 判断线 |
+| Cloudflare | 空闲 100s 断流 | 30s 心跳 + 90s 静默兜底 |
+| 断线重连 | 指数退避 1s→60s + 抖动 | 重连重发 hello；latest-wins 无竞态 |
+| 断线在途请求 | Oracle 对未收 `response` 的 `request` 回 `error(connection_lost)` | 交互式不持久化；`durable` 请求见 §11.8 |
 
-### 11.6 错误帧
+### 11.7 状态与错误
 
-协议级错误：
-
-```json
-{"type":"error","code":"bad_frame","message":"invalid JSON line"}
-{"type":"error","code":"unknown_type","message":"..."}
-```
-
-规则：收到畸形帧/未知 type → 回 `error`；**连续两次协议错误 → 关流**。MCP 方法错误（含超时、适配器不可达、后端错误）：
+`response.status`: `success | failed | timeout | rejected`
+错误体（方法级）：
 
 ```json
-{"type":"mcp_error_response","id":"<原 id>","error":{"code":"...","message":"..."}}
+{"type":"response","id":"<原 id>","status":"failed","error":{"code":"unknown_method","message":"..."}}
 ```
 
-code 枚举：`unknown_method | timeout | backend_unreachable | too_many_inflight | internal_error | connection_lost`（`connection_lost` 由 Gateway 侧合成）。
+code 枚举：`unknown_operation | unknown_method | timeout | backend_unreachable | too_many_inflight | internal_error | connection_lost`
 
-### 11.7 Runner 侧组件（协议外约定，实现时照此）
+协议级错误帧：`{"type":"error","code":"bad_frame|unknown_type","message":"..."}`；连续两次协议错误 → 关流。
 
-```
-Agent Stream（隶属于 Oracle Agent）
-     │
-     ▼
-mcp_adapter.py      ← 桥接，纯 stdlib；不实现任何 MCP 工具
-     │  逻辑方法调用 → 本地 MCP 会话
-     ▼
-127.0.0.1:6942/mcp  ← 现有 shell-mcp（HTTP/SSE），**不改动**
-```
+### 11.8 与 Task API（/pull）的关系
 
-- Adapter 自行管理到本地 6942 的 MCP 会话（initialize → 复用会话）。
-- `mcp_response.result` = 本地 MCP 返回的原始结果（Gateway 负责包装成客户端所需格式）。
+- `/pull /result /report` **保留**：适合"持久、可重试、可审计"的后台作业；Stream 适合"实时、交互"。
+- 可选：`durable=true` 的 `request` 由 Oracle 写入 tasks 表（同一任务对象），断线未完成可重投；默认 `durable=false`。
+- 实现建议（不强制）：tasks 表仍是唯一事实源，Stream 在线时充当快速投递，pull 作离线兜底。
 
-### 11.8 Oracle 侧组件（协议外约定）
+### 11.9 Runner 侧组件
 
 ```
-MCP Client（Cline / TG）
-     │
-     ▼  https://mcp-gateway.femboy.us.ci/mcp/<runner_id>   ← Cloudflare 只护这一层
-MCP Gateway（VPS）
-     │  initialize → 认证/路由 → 绑定 runner 流
-     ▼
-Runner connection（/api/v1/connect）
+Agent（含 Stream 主循环）
+   ├─ operation=exec     → exec handler → 本地进程
+   ├─ operation=shutdown → shutdown handler → OS 关机
+   └─ operation=mcp      → mcp_adapter.py（纯桥接）
+                              │ 逻辑方法 → 本地 MCP 会话
+                              ▼
+                           127.0.0.1:6942/mcp（现有 shell-mcp，不改动）
 ```
 
-- 路由：路径显式指定目标 runner（`/mcp/runner-01`）；或由 Gateway 配置/认证身份决定。
-- Gateway 与 Runner 流之间是 1:1 绑定；客户端断开不销毁 runner 流（可再连）。
+### 11.10 Oracle 侧组件
 
-### 11.9 兼容性
+```
+MCP Client（Cline / TG）─► https://mcp-gateway.femboy.us.ci/mcp/<runner_id>
+                                    │ Cloudflare 只护这一层
+                             MCP Gateway（VPS）
+                                    │ 绑定 runner 流（/api/v1/connect）
+                                    ▼
+                            Runner 出站连接
+```
 
-- `/pull`、`/result`、`/report` 及 Task API 全部保留：**Task = 生命周期/后台任务**，**Stream = 实时交互**，职责分离。
-- 本附录是 v1 的**增量**，服务端与 Agent 未实现前不影响 v1 运行。
+- 路由：MCP 按路径 `/mcp/<runner_id>` 指定目标；Control Plane 请求同样走连接注册表。
+- Gateway 与 Runner 流 1:1 绑定；客户端断开不销毁流。
+
+### 11.11 兼容性
+
+- 本附录为增量；v1 的五个接口、任务模型、错误码全部不变。
+- 早期"反向 MCP 专用通道"草案被本条取代（未实现、无兼容负担）。
+- Runner 能力模型（capabilities）不变：MCP 只是能力之一，不是协议核心。
