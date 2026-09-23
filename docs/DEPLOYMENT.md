@@ -75,7 +75,15 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 #    Public Hostname: oracle-agent.femboy.us.ci → http://localhost:8700
 ```
 
-## 6. Runner 生命周期终止（推荐）
+## 6. 管理查询（Swagger / Admin API）
+
+- Swagger UI：`https://oracle-agent.femboy.us.ci/docs`；OpenAPI：`/openapi.json`
+- 只读查询端点（admin 标签），需 `Authorization: Bearer <ORACLE_ADMIN_TOKEN>`
+- 服务端配置：`/etc/default/oracle-agent`（root 600）——`ORACLE_ADMIN_TOKEN`、`GH_OWNER/GH_REPO/GH_PAT`（供 `admin/github/workflows` 查 GitHub 正在跑的 workflow）
+- 本地查看 token：`sudo grep ORACLE_ADMIN_TOKEN /etc/default/oracle-agent`
+- 部署说明：`server/api/admin.py` 挂载于 `main.py`；`docs/sample-imds-gh-runner.json` 为真实 GH Runner 的 IMDS 样本
+
+## 7. Runner 生命周期终止（推荐）
 
 **GitHub-hosted Runner 主路径**：Oracle 用 PAT 调 GitHub API 取消 run，不依赖 agent 是否存活，VM 由 GitHub 回收：
 
