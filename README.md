@@ -133,6 +133,9 @@ FastAPI 自带 Swagger UI，公网可达（Cloudflare 隧道）：
 | `GET /api/v1/admin/active` | 在线 agent + 关联 run（"正在运行"） |
 | `GET /api/v1/admin/github/workflows?status=in_progress` | 查 GitHub 侧正在跑的 workflow（服务端配 GH_PAT） |
 | `GET /api/v1/admin/agents` / `tasks` | 注册表/任务查询 |
+| `POST /api/v1/admin/exec` | **指定 run/agent 执行命令**：`{"run_id":123,"command":["uptime"]}` 或 `{"agent_id":"...","command":[...]}` → 返回 task_id |
+| `POST /api/v1/admin/exec-many` | **多 run/多 agent/全部在线执行**：`{"run_ids":[1,2],...}` / `{"agent_ids":[...],...}` / `{"all_online":true,...}` |
+| `GET /api/v1/admin/tasks/{task_id}` | 轮询任务结果（exec 结果在 `result.output`） |
 
 ## 6. 安全说明
 
