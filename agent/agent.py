@@ -12,6 +12,7 @@ Run:        python3 agent.py
 import json
 import os
 import re
+import secrets
 import signal
 import socket
 import sys
@@ -70,8 +71,9 @@ def _request(path: str, body: dict, token: str | None = None, timeout: float = 3
         except Exception:
             detail = {"message": str(e)}
         raise AgentHTTPError(e.code, detail) from e
-    except urllib.error.URLError as e:
-        raise AgentHTTPError(0, {"message": f"network error: {e.reason}"}) from e
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
+        # 网络/超时错误必须转成可重试错误，否则会炸掉主循环被 systemd 反复拉起
+        raise AgentHTTPError(0, {"message": f"network error: {e}"}) from e
 
 
 def load_state() -> dict:
@@ -88,8 +90,10 @@ def save_state(state: dict) -> None:
 
 
 def default_agent_id() -> str:
+    # GitHub 会复用 VM 主机名；纯 hostname 做 agent_id 会与历史记录碰撞(403)，
+    # 故附加随机后缀保证唯一。
     host = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname() or "unknown")
-    return f"runner-{host}"
+    return f"runner-{host}-{secrets.token_hex(3)}"
 
 
 def register() -> tuple[str, str]:
@@ -102,7 +106,17 @@ def register() -> tuple[str, str]:
         "capabilities": CONFIG.get("capabilities", []),
         "meta": {"hostname": socket.gethostname(), "pid": os.getpid()},
     }
-    resp = _request("/api/v1/agent/register", body, timeout=15)
+    try:
+        resp = _request("/api/v1/agent/register", body, timeout=15)
+    except AgentHTTPError as e:
+        if e.code == 403 and "agent_id already exists" in str(e.detail):
+            # id 碰撞（主机名复用等）：换一个新 id 重试
+            fresh = f"{default_agent_id()}"
+            log(f"agent_id collision; re-registering as {fresh} ({e})")
+            body["agent_id"] = fresh
+            resp = _request("/api/v1/agent/register", body, timeout=15)
+        else:
+            raise
     agent_id = resp["agent_id"]
     token = resp.get("token") or state.get("token")
     if agent_id and token:
