@@ -89,22 +89,49 @@ def save_state(state: dict) -> None:
     os.replace(tmp, STATE_PATH)
 
 
+_AZURE_META = None
+
+
+def azure_metadata() -> dict:
+    """Azure Instance Metadata (IMDS): 全局唯一 VM 身份。非 Azure 环境返回空 dict。"""
+    global _AZURE_META
+    if _AZURE_META is None:
+        try:
+            req = urllib.request.Request(
+                "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+                headers={"Metadata": "true"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                _AZURE_META = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            _AZURE_META = {}
+    return _AZURE_META
+
+
 def default_agent_id() -> str:
-    # GitHub 会复用 VM 主机名；纯 hostname 做 agent_id 会与历史记录碰撞(403)，
-    # 故附加随机后缀保证唯一。
+    # GitHub 会复用 VM 主机名；纯 hostname 做 agent_id 会与历史记录碰撞(403)。
+    # 优先用 Azure VM instance ID（全局唯一、稳定）做唯一性来源，取不到再回退随机后缀。
     host = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname() or "unknown")
-    return f"runner-{host}-{secrets.token_hex(3)}"
+    vm = str(azure_metadata().get("compute", {}).get("vmId") or "")
+    uniq = vm[:8] if vm else secrets.token_hex(3)
+    return f"runner-{host}-{uniq}"
 
 
 def register() -> tuple[str, str]:
     state = load_state()
+    az = azure_metadata().get("compute") or {}
     body = {
         "agent_id": state.get("agent_id") or CONFIG.get("agent_id") or default_agent_id(),
         "token": state.get("token"),
         "name": CONFIG.get("agent_name") or socket.gethostname(),
         "version": CONFIG.get("version"),
         "capabilities": CONFIG.get("capabilities", []),
-        "meta": {"hostname": socket.gethostname(), "pid": os.getpid()},
+        "meta": {
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "azure_vm_id": az.get("vmId") or "",
+            "azure_vm_name": az.get("name") or "",
+        },
     }
     try:
         resp = _request("/api/v1/agent/register", body, timeout=15)
