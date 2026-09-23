@@ -137,6 +137,15 @@ FastAPI 自带 Swagger UI，公网可达（Cloudflare 隧道）：
 | `POST /api/v1/admin/exec-many` | **多 run/多 agent/全部在线执行**：`{"run_ids":[1,2],...}` / `{"agent_ids":[...],...}` / `{"all_online":true,...}` |
 | `GET /api/v1/admin/tasks/{task_id}` | 轮询任务结果（exec 结果在 `result.output`） |
 
+## 5.6 访问日志（含轮转）
+
+- 位置：VPS `/opt/oracle-agent/server/data/access.log`（JSON lines，****按行追加）
+- 记录：`ts / client(IP:port) / method / path / query / status / dur_ms / headers(完整) / body(请求体)`
+- 敏感头（`authorization`/`cookie`/`x-api-key` 等）值自动打码 `***`
+- **轮转**：`RotatingFileHandler` 大小轮转（默认 10MB × 5 个备份）
+- 默认跳过 `/api/v1/agent/*` 协议高频请求；设 `ACCESS_LOG_ALL=true` 全量记录
+- 环境变量：`ACCESS_LOG_PATH` / `ACCESS_LOG_MAX_BYTES` / `ACCESS_LOG_BACKUPS` / `ACCESS_LOG_ALL`
+
 ## 6. 安全说明
 
 - **出站唯模型**：Runner 无公网入站；拉取与心跳全部经 Cloudflare 隧道（自动 TLS）。
