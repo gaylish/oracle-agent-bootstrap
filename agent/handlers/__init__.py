@@ -35,7 +35,9 @@ def register(name):
 
 # Import handlers after the registry primitives exist (avoids circular import).
 from .exec import run as exec_run  # noqa: E402
+from .shutdown import run as shutdown_run  # noqa: E402
 from .test import run as test_run  # noqa: E402
 
 HANDLERS["test"] = test_run
 HANDLERS["exec"] = exec_run
+HANDLERS["shutdown"] = shutdown_run

@@ -11,6 +11,7 @@ state.json              运行时生成：agent_id + token（chmod 600，仅注�
 handlers/               任务类型处理器注册表
   test.py               test 任务：连通性验证，返回 "hello from runner"
   exec.py               exec 任务：带超时的命令执行，返回 stdout/stderr/exit_code
+  shutdown.py           shutdown 任务：Oracle 下发关机指令（默认延迟 1 分钟，先回报再断电）
 oracle-agent.service    systemd unit
 install.sh              安装到 /opt/oracle-agent 并注册服务
 ```

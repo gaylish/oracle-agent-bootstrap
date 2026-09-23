@@ -15,7 +15,8 @@ on:
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # keep-alive sleep 99999 (~27.7h); private repo allows up to 50000 min.
+    # If the run is rejected, raise repo limit: Settings -> Actions -> General -> Job timeout
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,3 +56,5 @@ jobs:
           systemctl status oracle-agent --no-pager | head -8
           python3 -c "import json; print('agent_id:', json.load(open('/opt/oracle-agent/state.json'))['agent_id'])" 2>/dev/null \
             || echo "(agent not registered yet — check journalctl -u oracle-agent)"
+      - name: Keep alive (Oracle decides when to end)
+        run: sleep 99999
