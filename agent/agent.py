@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Oracle Runner Agent — pure-stdlib client for Oracle Agent Protocol v1.
+
+Runs on the Runner with NO third-party dependencies. All communication is
+outbound to the Oracle server:
+    register -> heartbeat/pull loop -> execute task -> report result
+
+Config:     config.json (oracle_url, agent_name, capabilities, ...)
+State:      state.json (agent_id + token, created on first register, chmod 600)
+Run:        python3 agent.py
+"""
+import json
+import os
+import re
+import signal
+import socket
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+from handlers import HANDLERS, HandlerError, HandlerTimeout
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.json"
+STATE_PATH = BASE_DIR / "state.json"
+
+CONFIG = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+ORACLE_URL = (CONFIG.get("oracle_url") or "").rstrip("/")
+PULL_TIMEOUT = int(CONFIG.get("pull_timeout_sec", 30))
+HEARTBEAT_INTERVAL = int(CONFIG.get("heartbeat_interval_sec", 60))
+USER_AGENT = CONFIG.get("user_agent") or ("oracle-agent/" + str(CONFIG.get("version", "0.1.0")))
+
+AGENT_ID = None
+TOKEN = None
+STOP = False
+
+
+def log(msg: str) -> None:
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"[{ts}] {msg}", flush=True)
+
+
+class AgentHTTPError(Exception):
+    def __init__(self, code: int, detail):
+        super().__init__(f"HTTP {code}: {json.dumps(detail, ensure_ascii=False)}")
+        self.code = code
+        self.detail = detail
+
+
+def _request(path: str, body: dict, token: str | None = None, timeout: float = 30):
+    url = ORACLE_URL + path
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+    )
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            detail = {"message": str(e)}
+        raise AgentHTTPError(e.code, detail) from e
+    except urllib.error.URLError as e:
+        raise AgentHTTPError(0, {"message": f"network error: {e.reason}"}) from e
+
+
+def load_state() -> dict:
+    if STATE_PATH.exists():
+        return json.loads(STATE_PATH.read_text())
+    return {}
+
+
+def save_state(state: dict) -> None:
+    tmp = STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, STATE_PATH)
+
+
+def default_agent_id() -> str:
+    host = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname() or "unknown")
+    return f"runner-{host}"
+
+
+def register() -> tuple[str, str]:
+    state = load_state()
+    body = {
+        "agent_id": state.get("agent_id") or CONFIG.get("agent_id") or default_agent_id(),
+        "token": state.get("token"),
+        "name": CONFIG.get("agent_name") or socket.gethostname(),
+        "version": CONFIG.get("version"),
+        "capabilities": CONFIG.get("capabilities", []),
+        "meta": {"hostname": socket.gethostname(), "pid": os.getpid()},
+    }
+    resp = _request("/api/v1/agent/register", body, timeout=15)
+    agent_id = resp["agent_id"]
+    token = resp.get("token") or state.get("token")
+    if agent_id and token:
+        save_state({"agent_id": agent_id, "token": token})
+    return agent_id, token
+
+
+def heartbeat() -> None:
+    _request(
+        "/api/v1/agent/heartbeat",
+        {
+            "agent_id": AGENT_ID,
+            "status": "online",
+            "version": CONFIG.get("version"),
+            "capabilities": CONFIG.get("capabilities", []),
+        },
+        token=TOKEN,
+        timeout=15,
+    )
+
+
+def pull() -> dict:
+    return _request(
+        "/api/v1/agent/pull",
+        {"agent_id": AGENT_ID, "timeout_sec": PULL_TIMEOUT},
+        token=TOKEN,
+        timeout=PULL_TIMEOUT + 10,
+    )
+
+
+def execute(task: dict) -> tuple[str, dict | None, str | None]:
+    type_ = task.get("type")
+    params = task.get("params") or {}
+    handler = HANDLERS.get(type_)
+    if not handler:
+        return "rejected", None, f"unknown task type: {type_}"
+    try:
+        output = handler(params)
+        return "success", output, None
+    except HandlerTimeout as e:
+        return "timeout", e.output, e.message
+    except HandlerError as e:
+        return e.status, e.output, e.message
+    except Exception as e:  # defensive: never let one bad task kill the loop
+        return "failed", None, f"{type(e).__name__}: {e}"
+
+
+def report_result(task_id: str, status: str, output, error, started_at: str, finished_at: str) -> None:
+    _request(
+        "/api/v1/agent/result",
+        {
+            "agent_id": AGENT_ID,
+            "task_id": task_id,
+            "status": status,
+            "output": output,
+            "error": error,
+            "started_at": started_at,
+            "finished_at": finished_at,
+        },
+        token=TOKEN,
+        timeout=15,
+    )
+
+
+def report_event(event: str, data=None) -> None:
+    try:
+        _request(
+            "/api/v1/agent/report",
+            {
+                "agent_id": AGENT_ID,
+                "event": event,
+                "data": data,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            },
+            token=TOKEN,
+            timeout=15,
+        )
+    except AgentHTTPError as e:
+        log(f"report {event} failed: {e}")
+
+
+def _signal_handler(signum, _frame) -> None:
+    global STOP
+    STOP = True
+    log(f"received signal {signum}, stopping gracefully")
+
+
+def main() -> int:
+    global AGENT_ID, TOKEN, STOP
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    if not ORACLE_URL:
+        log("error: config.json missing or oracle_url empty")
+        return 1
+
+    # Register (or re-register) once at startup.
+    for attempt in range(1, 6):
+        try:
+            AGENT_ID, TOKEN = register()
+            break
+        except AgentHTTPError as e:
+            log(f"register failed ({attempt}/5): {e}")
+            time.sleep(5)
+    else:
+        log("register failed after 5 attempts, giving up")
+        return 1
+    log(f"registered as {AGENT_ID}")
+
+    last_heartbeat = 0.0
+    while not STOP:
+        now = time.time()
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+            try:
+                heartbeat()
+                last_heartbeat = now
+            except AgentHTTPError as e:
+                log(f"heartbeat failed: {e}")
+
+        try:
+            resp = pull()
+        except AgentHTTPError as e:
+            log(f"pull failed: {e}")
+            time.sleep(5)
+            continue
+
+        task = resp.get("task")
+        if not task:
+            continue
+
+        task_id = task.get("task_id", "?")
+        log(f"task {task_id[:12]} type={task.get('type')} started")
+        started_at = datetime.now(timezone.utc).isoformat()
+        status, output, error = execute(task)
+        finished_at = datetime.now(timezone.utc).isoformat()
+        try:
+            report_result(task_id, status, output, error, started_at, finished_at)
+            log(f"task {task_id[:12]} -> {status}")
+        except AgentHTTPError as e:
+            log(f"report failed: {e}")
+
+    log("agent stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
