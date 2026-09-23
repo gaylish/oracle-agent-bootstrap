@@ -82,6 +82,7 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 - 服务端配置：`/etc/default/oracle-agent`（root 600）——`ORACLE_ADMIN_TOKEN`、`GH_OWNER/GH_REPO/GH_PAT`（供 `admin/github/workflows` 查 GitHub 正在跑的 workflow）
 - **认证开关**：`ADMIN_AUTH_ENABLED`=`true`(默认，需 Bearer)/`false`(关闭，调试用；公网暴露时务必开启)
 - **触发 run**：`POST /api/v1/admin/trigger` `{"count": N}`（默认 1，上限 20）
+- **停止 run**：`POST /api/v1/admin/cancel` `{"run_id":N}` / `{"run_ids":[...]}` / `{"all_in_progress":true}`（GitHub cancel）
 - **在 run 上执行命令**：`POST /api/v1/admin/exec`（单 run/agent）与 `POST /api/v1/admin/exec-many`（多 run / 多 agent / `all_online`）；结果经 `GET /api/v1/admin/tasks/{task_id}` 轮询
 - **访问日志**：`/opt/oracle-agent/server/data/access.log`（JSON lines；完整 headers + body + 时间，敏感头打码；RotatingFileHandler 10MB×5 轮转；默认跳过 agent 协议请求）
 - **日志查询专用端点**：`GET /api/v1/admin/logs/<LOG_VIEW_TOKEN>`（**Swagger 隐藏**；`?lines/q/path/since/file`；token 走路径，独立于 ADMIN_AUTH_ENABLED；未配 `LOG_VIEW_TOKEN` 则 404；自身访问在日志里路径打码为 `<token>`）
