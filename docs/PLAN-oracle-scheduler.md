@@ -226,28 +226,33 @@ Oracle Controller
 ```
 查询指定 repo/workflow 的 in_progress runs
         │
-  ┌─────┴─────┐
-  无可用 Run  有运行中 Run
-  │           │
-  ▼           ▼
-立即触发    检查最老 Run
-            │
-      ┌─────┴─────┐
-      <5h55m   >=5h55m
-      │         │
-      等待      再触发一个
+  ┌─────┴─────────┐
+  无可用 Run    有运行中 Run
+  │              │
+  ▼              ▼
+立即触发     检查【最新】Run
+            （最近触发的在跑 Run）
+              │
+        ┌─────┴─────┐
+        <5h55m   >=5h55m
+        │         │
+        等待      再触发一个
 ```
 
 - **一轮最多补一个**：单个 supervisor 单次巡检最多 trigger 一个 run（避免并发风暴；下次巡检再评估）。
 - **语义**：不是“存在超龄 Run 就只保留一个”，而是：
   - 当前**没有**可用 Run → **补 1 个**
-  - 最老 Run **达到 5h55m** → **再补 1 个**（滚动补台，旧 Run 继续跑至 GitHub 6h 上限自然回收）
-- 滚动效果（5h55m 换台，规避 6h job 上限前的空窗）：
+  - **最新 Run（最近触发的在跑 Run）已运行满 5h55m** → **再补 1 个**（滚动补台，旧 Run 继续跑至 GitHub 6h 上限自然回收）
+  - 判断基准是**最新 Run**（而不是最旧）：保证"始终存在一个启动时间不早于 5h55m 前 的 Run"。
+- 滚动效果（按最新 Run 满 5h55m 补台，规避 6h job 上限前的空窗）：
   ```
-  0:00  Run A
-  5:55  Run B   （此时 A 仍在跑，B 补位）
-  ...旧 A 于 6:00 被 GitHub 回收
+  0:00  Run A        （最新=A）
+  5:55  Run B        （最新 A 满 5h55m → 补 B；此时 A 仍在跑）
+  11:50 Run C        （最新 B 满 5h55m → 补 C）
+  17:45 Run D        （最新 C 满 5h55m → 补 D）
+  ...
   ```
+  - 旧 Run 由 GitHub 6h 上限自然回收；判断始终以“最新”为准。
 
 ### E3 多 PAT 故障转移（固定语义）
 
@@ -321,7 +326,7 @@ Template atlas1
 
 1. **Supervisor 配置模型**：`name / repo / workflow_file / accounts / check_interval_sec / min_running / renew_after_sec / template(可选)`。
 2. **GitHub Account / Credential Profile**：PAT 不进入公开 API；profile 健康状态 `healthy / cooldown / unhealthy`；429 按 GitHub `reset` 时间恢复；网络错误临时失败、**不永久封禁**。
-3. **Supervisor 巡检循环**：每 `check_interval_sec` 查询 in_progress；无 Run → 补 1；最老 Run ≥ `renew_after_sec` → 补 1；**一轮最多补一个**。
+3. **Supervisor 巡检循环**：每 `check_interval_sec` 查询 in_progress；无 Run → 补 1；**最新 Run** ≥ `renew_after_sec` → 补 1；**一轮最多补一个**。
 4. **Trigger → Run 建档**：`trigger → GitHub run_id → runs(queued) → provisioning → Agent register → running`（复用现有生命周期）。
 5. **Template 自动 Apply（后置）**：Agent register 事件 → supervisor/template 关联 → Template Run → step 1 → step 2 → step 3 …（Phase 2A 能力接入）。
 6. **可观测性（最后做）**：最近巡检时间、最近 trigger、使用了哪个 account、account cooldown/unhealthy 原因、当前运行中的 Run、最近一次补台原因。
