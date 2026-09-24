@@ -200,6 +200,8 @@ account secondary → PAT → trigger workflow → Run queued → provisioning
 > **设计目标（2026-09 定稿）**：多 PAT 的价值不只是“20 → 40 → 60 并发”，还包括 **Supervisor 的持续运行能力**——
 > 某个 GitHub Account 失效时 Oracle 自动切换其它 Credential Profile，不依赖 CF Worker 保存 PAT/cron。
 
+> 🔒 **Part E 核心定义已定稿固定**（commit 3e803f58）：实现时不应再改变 E1–E5 的五条核心语义（最终模型 / 巡检决策 / 多 PAT 分级 / Supervisor≠Template / 全部隐藏）。
+
 ### E1 最终模型
 
 ```
@@ -236,6 +238,7 @@ Oracle Controller
       等待      再触发一个
 ```
 
+- **一轮最多补一个**：单个 supervisor 单次巡检最多 trigger 一个 run（避免并发风暴；下次巡检再评估）。
 - **语义**：不是“存在超龄 Run 就只保留一个”，而是：
   - 当前**没有**可用 Run → **补 1 个**
   - 最老 Run **达到 5h55m** → **再补 1 个**（滚动补台，旧 Run 继续跑至 GitHub 6h 上限自然回收）
@@ -311,6 +314,22 @@ Template atlas1
 
 - 每 60s × N supervisor 的 GitHub 查询需合并/限频，避免并发触发 rate limit（配合 E3 的 429 cooldown）。
 
+### E7 实现顺序（定稿，严格按序落）
+
+> 边界：**Supervisor 决定“什么时候/用哪个账号 trigger”；Template 决定“Agent 上线后装什么”**——
+> 不要把 Supervisor 写成 Template 的一种特殊形式。两条线保持分离，后续在 Agent 注册事件上组合。
+
+1. **Supervisor 配置模型**：`name / repo / workflow_file / accounts / check_interval_sec / min_running / renew_after_sec / template(可选)`。
+2. **GitHub Account / Credential Profile**：PAT 不进入公开 API；profile 健康状态 `healthy / cooldown / unhealthy`；429 按 GitHub `reset` 时间恢复；网络错误临时失败、**不永久封禁**。
+3. **Supervisor 巡检循环**：每 `check_interval_sec` 查询 in_progress；无 Run → 补 1；最老 Run ≥ `renew_after_sec` → 补 1；**一轮最多补一个**。
+4. **Trigger → Run 建档**：`trigger → GitHub run_id → runs(queued) → provisioning → Agent register → running`（复用现有生命周期）。
+5. **Template 自动 Apply（后置）**：Agent register 事件 → supervisor/template 关联 → Template Run → step 1 → step 2 → step 3 …（Phase 2A 能力接入）。
+6. **可观测性（最后做）**：最近巡检时间、最近 trigger、使用了哪个 account、account cooldown/unhealthy 原因、当前运行中的 Run、最近一次补台原因。
+
+**落地方案**：Phase 4A 先做 **Supervisor 最小闭环**（1→2→3→4，不同时碰 Template）——验证：
+`每分钟检查 → GitHub trigger → Run 建档 → Agent 注册 → 5h55m 后补下一台 → 多 PAT 故障切换`
+随后 Phase 4B 再接 `template: atlas1` 的 Agent 注册自动部署。
+
 ## Part D：实施顺序 / 非目标
 
 ### Phase 划分
@@ -319,7 +338,9 @@ Template atlas1
 - ⏳ Phase 2A：Task Template（表 + **本地 CLI/服务端维护（无公开 CRUD）** + apply 隐藏端点/agentctl + exec env 透传 + 日志打码）。
 - ⏳ Phase 2B：多账号（github_accounts + runs.account_id + 按账号路由 + **模块 API 隐藏、不对外开放**）。
 - ⏳ Phase 3：组合编排 `/admin/deploy` + Template Run 增强（重试/步骤状态/告警）。
-- ⏳ Phase 4：**Supervisor 常驻守护**（`supervisors` 配置 + E2 巡检决策 + 滚动补台 + E3 多 PAT 故障分级/冷却转移）。
+- ⏳ Phase 4A：**Supervisor 最小闭环**（配置模型 → profile 健康分级 → 巡检循环 → Trigger→Run 建档；不含 Template）。
+- ⏳ Phase 4B：**Template 自动 Apply 接入**（Agent 注册 → supervisor/template 关联 → Template Run）。
+- ⏳ Phase 5：**可观测性**（巡检/trigger/account/补台原因/当前 Run 视图）。
 
 ### 非目标 / 约束
 
