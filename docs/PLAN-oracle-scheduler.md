@@ -57,7 +57,15 @@ runs 表加 `account_id`；现有行回填默认 profile。
 
 调度规则仅：`当前 in_progress < max_concurrent_runs` → 可分发。
 
+### A4 不对外开放 / 路径隐藏（2026-09 定）
+
+- **多账号模块 API 不对外开放**：账号管理（github_accounts 增删改、`/admin/accounts` 并发视图）一律 `include_in_schema=False`，**不出现在 Swagger**，仅服务端内部 / agentctl 使用。
+- 公开端点（`trigger` / `cancel` / `github/workflows`）只加**可选 `account` 参数**（不算新模块，对外无新增管理路径）。
+- cancel 按 `runs.account_id` 自动反查 PAT——调用者不需要知道账号，自然无需暴露账号管理。
+
 ---
+
+
 
 ## Part B：Task Template（部署任务模板）
 
@@ -156,7 +164,12 @@ atlas1
 ```
 
 - Template 最终通过 **Control Plane 的 exec** 执行，**不新建 Agent 协议**。
-- 计划路径：`POST /admin/templates` 建模板 → `POST /admin/templates/{name}/apply {"run_id": N}` → 按序执行。
+
+### B7 模板不在公开 API（2026-09 定）
+
+- **API 不做 templates 模块**：移除原计划的 `/admin/templates` CRUD 公开端点。
+- `task_templates` / `template_secrets` 表由**服务端配置 / 本地 CLI（agentctl）直接维护**（或独立配置文件）。
+- 执行入口（apply）同样**隐藏**：`include_in_schema=False`（不出现在 Swagger），或仅 agentctl / 服务端内部调用；模板与 secret 值不进公网 API。
 
 ---
 
@@ -185,8 +198,8 @@ account secondary → PAT → trigger workflow → Run queued → provisioning
 ### Phase 划分
 
 - ✅ Phase 1（已完成）：Run→Agent 定位（run_id/id/vm_id/agent_id + 状态机 + resolved_by）。
-- ⏳ Phase 2A：Task Template（表 + CRUD + apply 执行器 + exec env 透传 + 日志打码）。
-- ⏳ Phase 2B：多账号（github_accounts + runs.account_id + 按账号路由 + admin/accounts）。
+- ⏳ Phase 2A：Task Template（表 + **本地 CLI/服务端维护（无公开 CRUD）** + apply 隐藏端点/agentctl + exec env 透传 + 日志打码）。
+- ⏳ Phase 2B：多账号（github_accounts + runs.account_id + 按账号路由 + **模块 API 隐藏、不对外开放**）。
 - ⏳ Phase 3：组合编排 `/admin/deploy` + Template Run 增强（重试/步骤状态/告警）。
 
 ### 非目标 / 约束
