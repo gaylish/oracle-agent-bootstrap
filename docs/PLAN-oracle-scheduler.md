@@ -198,6 +198,96 @@ atlas1
 - `task_templates` / `template_secrets` 表由**服务端配置 / 本地 CLI（agentctl）直接维护**（或独立配置文件）。
 - 执行入口（apply）同样**隐藏**：`include_in_schema=False`（不出现在 Swagger），或仅 agentctl / 服务端内部调用；模板与 secret 值不进公网 API。
 
+### B8 Template 格式 v1（Oracle-native YAML，2026-09 定稿）
+
+> 原则：**格式像 GitHub Actions，语义不要照搬 GitHub Actions**。
+> 目标是把现有 workflow 业务步骤"搬"过来，而不是重新实现 GitHub Actions。
+
+#### 格式
+
+```yaml
+name: atlas1
+description: Deploy atlas1 runner
+
+steps:
+  - name: install_xray
+    run:
+      - bash
+      - -c
+      - |
+        mkdir -p /var/log/v2ray
+        curl -fsSL "https://example.com/xray" -o /usr/local/bin/xray
+        chmod +x /usr/local/bin/xray
+
+  - name: validate_xray
+    run: [xray, -test, -c, /etc/xray/config.json]
+    timeout_sec: 120
+
+  - name: start_xray
+    run: [systemctl, enable, --now, xray]
+
+  - name: install_cloudflared
+    env:
+      CF_TUNNEL_TOKEN: { secret: CF_TUNNEL_TOKEN }
+    run:
+      - bash
+      - -c
+      - |
+        curl -fsSL https://example.com/cloudflared -o /usr/local/bin/cloudflared
+        chmod +x /usr/local/bin/cloudflared
+        cloudflared service install "$CF_TUNNEL_TOKEN"
+
+  - name: install_atlas
+    run:
+      - bash
+      - -c
+      - |
+        # install atlas
+        ...
+
+  - name: install_tgbot
+    env:
+      BOT_TOKEN: { secret: BOT_TOKEN }
+      CHAT_IDS:  { secret: CHAT_IDS }
+    run:
+      - bash
+      - -c
+      - |
+        # install telegram bot
+        ...
+```
+
+#### 字段（第一版）
+
+| 字段 | 版本 | 说明 |
+|---|---|---|
+| `name` / `description` | ✅ | 元信息 |
+| `steps[]` | ✅ | **默认串行**：`steps[0] success → steps[1] → …`；失败即 Template failed |
+| `steps[].name` | ✅ | 步骤名（状态/日志用） |
+| `steps[].run` | ✅ | **argv 数组**（不是 shell 字符串），最终 `subprocess.run(argv)`；复杂脚本用 `[bash, -c, script]` |
+| `steps[].timeout_sec` | ✅ | 超时 |
+| `steps[].env` | ✅ | 环境变量；值为 `{ secret: KEY }` 引用 Oracle secret store |
+| `steps[].retry` | 预留 | `{max_attempts: N}`（第一版可不实现字段） |
+| `needs` / `if` / `matrix` / `jobs` / `permissions` / `runs-on` | ❌ | GitHub Actions 专属，**不引入** |
+
+#### 关键语义
+
+1. **run 保留 argv**：`xray -test -c /etc/xray/config.json` 直接对应 `subprocess.run([...])`，不重新引入 `Oracle → shell string → shell parsing`。
+2. **Secret 不仿 `secrets.X`**：用 `env: { KEY: { secret: KEY } }`；Template YAML 只含 **secret reference**，值在 Oracle secret store，**永不进 YAML/API/日志**。
+3. **Step 串行**：第一版不做 needs/DAG；需要时以后扩展 `needs: [build]`。
+4. **不发明类型**：`install` / `service` / `download` 都是 **exec**；一切最终都是 exec + env。
+5. **与 GitHub 的区别**：只借鉴 YAML 表达方式，不背 GitHub Actions 的全部模型。
+
+#### 处理管线
+
+```
+Template Step
+    ↓ resolve secrets（Oracle secret store）
+    ↓ construct exec request（argv + env + timeout）
+    ↓ Agent Stream (operation=exec)
+    ↓ result
+    ↓ success → next step；failure → Template failed
+```
 ---
 
 ## Part C：组合编排（Phase 2）
