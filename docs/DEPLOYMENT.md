@@ -7,7 +7,7 @@
 - **主机**：Oracle Cloud VPS `vnic-1`（Ubuntu 24.04 aarch64，公网 IP `213.35.122.16`）
 - **访问**：SSH `HuaweiAgent@213.35.122.16:22`（备用通道：MCP 隧道 `127.0.0.1:13005`）
 - **控制器**：`/opt/oracle-agent/`，专用用户 `oracle-agent`，systemd 单元 `oracle-agent.service`
-- **监听**：`127.0.0.1:8700`（**仅本机**；公网入口经 Cloudflare 隧道，VCN 无开放端口）
+- **监听**：`0.0.0.0:8700`（公网直连入口 `http://213.35.122.16:8700`，iptables 已放行 `dport 8700` 并持久化到 `rules.v4`；CF 隧道入口 `https://oracle-agent.femboy.us.ci` 同时可用）
 
 ## 2. 网络拓扑（生产）
 
@@ -80,7 +80,8 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 - Swagger UI：`https://oracle-agent.femboy.us.ci/docs`；OpenAPI：`/openapi.json`
 - 只读查询端点（admin 标签），需 `Authorization: Bearer <ORACLE_ADMIN_TOKEN>`
 - 服务端配置：`/etc/default/oracle-agent`（root 600）——`ORACLE_ADMIN_TOKEN`、`GH_OWNER/GH_REPO/GH_PAT`（供 `admin/github/workflows` 查 GitHub 正在跑的 workflow）
-- **认证开关**：`ADMIN_AUTH_ENABLED`=`true`(默认，需 Bearer)/`false`(关闭，调试用；公网暴露时务必开启)
+- **认证开关**：`ADMIN_AUTH_ENABLED`=`true`(默认，需 Bearer)/`false`(关闭)
+  - **当前有意置为 `false`**（临时 runner 环境，使用者已知悉公网可免认证调用 trigger/exec 的风险；logs 端点走独立 `LOG_VIEW_TOKEN`，不受影响）
 - **触发 run**：`POST /api/v1/admin/trigger` `{"count": N}`（默认 1，上限 20）
 - **停止 run**：`POST /api/v1/admin/cancel` `{"run_id":N}` / `{"run_ids":[...]}` / `{"all_in_progress":true}`（GitHub cancel）
 - **在 run 上执行命令**：`POST /api/v1/admin/exec`（单 run/agent）与 `POST /api/v1/admin/exec-many`（多 run / 多 agent / `all_online`）；结果经 `GET /api/v1/admin/tasks/{task_id}` 轮询
