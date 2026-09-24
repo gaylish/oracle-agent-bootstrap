@@ -278,6 +278,11 @@ steps:
 4. **不发明类型**：`install` / `service` / `download` 都是 **exec**；一切最终都是 exec + env。
 5. **与 GitHub 的区别**：只借鉴 YAML 表达方式，不背 GitHub Actions 的全部模型。
 
+#### Secret 用例备注（2026-09）
+
+- Secret store 支持任意多个 key；同一隧道 token 若**既用于 service install 又嵌入 service 文件**（如 atlas1.service），建模为独立 secret 并在安装步骤 **sed 注入**（`sed -i "s|<旧值>|$VAR|"`），远程文件可留占位符。
+- 旋转/故障切换 = 在 Oracle 改 secret 值即可，仓库与 workflow 零改动；配合多 PAT（Part A）账号/隧道任一失效都能续。
+
 #### 处理管线
 
 ```
