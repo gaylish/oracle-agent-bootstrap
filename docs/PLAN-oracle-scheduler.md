@@ -1,6 +1,33 @@
 # 计划：Oracle Runner 调度与部署系统（Task Template + 多 GitHub 账号 + Supervisor 常驻守护）
 
-> 状态：**计划落盘，未实施**（2026-09）
+> 状态：**计划落盘；Phase 1 已完成；Phase 4A 实施依据（2026-09）**
+> 本文档为**实现基线**——Part E 核心语义（E1–E5）已定稿固定，后续实现不得再改。
+
+## 〇 设计总纲（Why）
+
+**职责迁移**：GitHub 从"业务自动化平台"降级为"临时 Runner 提供器"；Oracle Agent 接管原先 GitHub Workflow 的业务编排职责。
+
+| 能力 | GitHub Workflow | Oracle Agent Template |
+|---|---|---|
+| 创建临时 Runner / Ubuntu 环境 | ✅ | ❌ |
+| Bootstrap SSH / MCP / Agent | ✅ | ❌ |
+| 业务安装/配置/Secret/步骤顺序/超时/重试/状态/日志 | ❌ | ✅ |
+
+- `task_templates` + `template_secrets` 本质是 **Oracle 自己的 Workflow/Job Engine**（Template Run + Step 状态机），不是普通 exec 队列。
+- Template 建立在 **Agent Stream 的 exec operation 之上**，不需要新的 Agent 协议：
+  `Template Engine → Control Plane exec → Agent Stream → Runner → result → 下一步`
+- MVP（Phase 2A）：ordered steps `{command, timeout, env_refs, result}`；以后逐步加 retry/condition/on_failure/outputs/depends_on/health_check。
+
+**四层**：
+```
+Oracle Controller
+   ├─ Supervisor        (WHEN / WHO)
+   ├─ Template Engine   (WHAT)  → Template Run → Step1 → Step2 …
+   └─ Account Manager   (WHICH PAT)
+              ↓
+          GitHub Run → Runner Agent → Agent Stream → exec/mcp/shutdown
+```
+
 > 本文档合并了此前两份草案（multi-PAT / Task Template）并吸收最新调整：
 > - Workflow 只负责"把 Runner 拉起来"；业务部署全部移交 Oracle。
 > - Template = 部署任务（named steps 线性依赖），Secret 独立存储只留引用。
