@@ -1,4 +1,4 @@
-# 计划：Oracle Runner 调度与部署系统（Task Template + 多 GitHub 账号）
+# 计划：Oracle Runner 调度与部署系统（Task Template + 多 GitHub 账号 + Supervisor 常驻守护）
 
 > 状态：**计划落盘，未实施**（2026-09）
 > 本文档合并了此前两份草案（multi-PAT / Task Template）并吸收最新调整：
@@ -193,6 +193,71 @@ account secondary → PAT → trigger workflow → Run queued → provisioning
 
 ---
 
+## Part E：Supervisor（常驻任务守护 / Keep-alive 调度）
+
+> 需求来源：原实现用 **Cloudflare Worker（PAT + 定时触发器）** 每分钟检查 atlas1 是否在跑。
+> 迁入 Oracle 后：不用敲 CF Worker 代码，多 PAT 天然续命，状态可审计。
+
+### E1 目标
+
+对指定 workflow（如 `gaylish/codespace/.github/workflows/atlas1.yml`）做**常驻守护**：
+
+- 每 60s 检查一次"有没有正在运行的 run"
+- 若**没有运行中的 run** → 触发一个新的
+- 若**最老的运行中 run 已跑满 5h55m（21300s）** → 再触发一个新的（滚动换台；`renew_after_sec` 可配）
+- 多账号（Profiles）下：当前账号失效/超限 → **自动换下一个可用账号的 PAT** 触发，保证任务始终有 agent
+
+> 5h55m 的由来：GitHub 托管 job 上限 6h（360min），在到期前滚动换新避免"裸奔空窗"。
+
+### E2 数据模型（服务端配置，非公开 API）
+
+```jsonc
+// 服务端配置（如 /etc/default/oracle-agent/supervisors.json）
+{
+  "supervisors": [
+    {
+      "name": "atlas1",
+      "repo": "gaylish/codespace",
+      "workflow_file": ".github/workflows/atlas1.yml",
+      "accounts": ["primary", "secondary"],     // 触发顺序：失败/超限自动换下一个（多 PAT 续命）
+      "check_interval_sec": 60,
+      "min_running": 1,
+      "renew_after_sec": 21300,                  // 5h55m
+      "template": "atlas1",                      // 可选：Phase 2A，agent 注册后自动 apply
+      "enabled": true
+    }
+  ]
+}
+```
+
+### E3 巡检逻辑（Oracle 后台循环）
+
+```
+每 check_interval_sec（60s）：
+  for each supervisor(enabled):
+    runs = GitHub API(当前 profile PAT) 查 repo/workflow 的 in_progress runs
+    live = [r for r in runs if start_time < now - renew_after_sec? 不在换台窗口]
+    if len(live) < min_running:
+        trigger_dispatch(当前 profile)          // 触发失败 → 换下一个 profile 再试
+    elif oldest_start < now - renew_after_sec:
+        trigger_dispatch(当前 profile)          // 滚动换台（可选 discard 旧的：cancel 旧 run）
+```
+
+- 实现形态：Oracle 进程内后台 asyncio 循环（或独立线程），配置驱动；**不在 Swagger**，状态仅 agentctl / 隐藏端点可查。
+- API 节流：60s × N supervisor 的 GitHub 查询要合并/限频，避免触发 rate limit。
+
+### E4 与其它部分的组合
+
+- **多 PAT（Part A）**：`accounts` 顺序即故障转移链；账号失效自动切下一个。
+- **Task Template（Part B）**：可选——office atlas1.yml 已是完整 workflow（自带业务+keep-alive），supervisor 只需"保活"；若工作流最小化，则 supervisor 触发 bootstrap 后由 `template` 布置业务。
+- **生命周期（现有 runs 状态机）**：supervisor 写 run 档案照常（queued→provisioning→running→终态），`renew` 决策可基于 runs 表/ GitHub 双向。
+
+### E5 边界
+
+- 与 CF Worker 的差异：不再需要单独部署 Worker；PAT 不出 Oracle；切换/告警/审计可控。
+- 不接管通用调度（先做单 supervisor 常驻；多 supervisor、优先级等后续）。
+
+---
 ## Part D：实施顺序 / 非目标
 
 ### Phase 划分
@@ -201,6 +266,7 @@ account secondary → PAT → trigger workflow → Run queued → provisioning
 - ⏳ Phase 2A：Task Template（表 + **本地 CLI/服务端维护（无公开 CRUD）** + apply 隐藏端点/agentctl + exec env 透传 + 日志打码）。
 - ⏳ Phase 2B：多账号（github_accounts + runs.account_id + 按账号路由 + **模块 API 隐藏、不对外开放**）。
 - ⏳ Phase 3：组合编排 `/admin/deploy` + Template Run 增强（重试/步骤状态/告警）。
+- ⏳ Phase 4：**Supervisor 常驻守护**（`supervisors` 配置 + 后台巡检循环 + 滚动换台 + 多 PAT 故障转移）。
 
 ### 非目标 / 约束
 
