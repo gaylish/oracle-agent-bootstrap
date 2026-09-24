@@ -84,7 +84,9 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
   - **当前有意置为 `false`**（临时 runner 环境，使用者已知悉公网可免认证调用 trigger/exec 的风险；logs 端点走独立 `LOG_VIEW_TOKEN`，不受影响）
 - **触发 run**：`POST /api/v1/admin/trigger` `{"count": N}`（默认 1，上限 20）
 - **停止 run**：`POST /api/v1/admin/cancel` `{"run_id":N}` / `{"run_ids":[...]}` / `{"all_in_progress":true}`（GitHub cancel）
-- **在 run 上执行命令**：`POST /api/v1/admin/exec`（单 run/agent）与 `POST /api/v1/admin/exec-many`（多 run / 多 agent / `all_online`）；结果经 `GET /api/v1/admin/tasks/{task_id}` 轮询
+- **在 run 上执行命令**：`POST /api/v1/admin/exec` 与 `POST /api/v1/admin/exec-many`（`run_ids` / `vm_ids` / `agent_ids` / `all_online`）；结果经 `GET /api/v1/admin/tasks/{task_id}` 轮询
+  - **标识层级**（四选一、互斥）：`run_id`（GitHub，首选）→ `id`（内部兼容）→ `agent_id`（Agent 直接，校验在线）→ `vm_id`（Azure VM 反查）；响应回显 `resolved_by`
+  - Run 属目标走状态机（queued/provisioning→409 agent_not_ready；timeout→409 agent_not_available；终态→409 run_not_active；running→下发）
 - **Run 生命周期**：runs 表升级为 GitHub Run 生命周期记录（`trigger` 瞬间即建档）
   - Oracle 状态：`queued`（GitHub 已接受、Job 未开始）→ `provisioning`（Job 已开、Agent 未注册）→ `running`（Agent 已注册）→ `completed / failed / cancelled`（按 GitHub conclusion 归一化）；`provisioning_timeout`（5 分钟无 Agent）
   - 双层原始字段：`github_status` / `github_conclusion` 与归一化 `status` 并存，不丢 GitHub 原始语义
