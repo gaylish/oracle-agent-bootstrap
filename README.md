@@ -133,7 +133,8 @@ FastAPI 自带 Swagger UI，公网可达（Cloudflare 隧道）：
 | `GET /api/v1/admin/active` | 在线 agent + 关联 run（"正在运行"） |
 | `GET /api/v1/admin/github/workflows?status=in_progress` | 查 GitHub 侧正在跑的 workflow（服务端配 GH_PAT） |
 | `GET /api/v1/admin/agents` / `tasks` | 注册表/任务查询 |
-| `POST /api/v1/admin/exec` | **指定 run/agent 执行命令**：`{"run_id":123,"command":["uptime"]}` 或 `{"agent_id":"...","command":[...]}` → 返回 task_id |
+| `POST /api/v1/admin/exec` | **指定 Run/Agent 执行命令**（目标四选一、互斥）：`{"run_id":<GitHub run ID>}`（首选）/ `{"id":<内部ID>}` / `{"agent_id":...}`（直连 Agent，校验在线）/ `{"vm_id":...}`（Azure VM 反查）；响应含 `resolved_by`；Run 属目标走状态机（queued/provisioning→409、终态→409） |
+| `POST /api/v1/admin/exec-many` | **批量执行**：`run_ids`（兼容 GitHub/内部 id）、`vm_ids`、`agent_ids`、`all_online`；逐项返回 created/skipped |
 | `POST /api/v1/admin/exec-many` | **多 run/多 agent/全部在线执行**：`{"run_ids":[1,2],...}` / `{"agent_ids":[...],...}` / `{"all_online":true,...}` |
 | `GET /api/v1/admin/tasks/{task_id}` | 轮询任务结果（exec 结果在 `result.output`） |
 | `GET /api/v1/admin/logs/{LOG_TOKEN}`（**不在 Swagger**） | 专用 access.log 查询：`?lines=&q=&path=&since=&file=`；认证走 `LOG_VIEW_TOKEN`（路径 token，与 ADMIN 开关解耦，未配置则 404） |
