@@ -153,6 +153,7 @@ FastAPI 自带 Swagger UI，公网可达（Cloudflare 隧道）：
 - **出站唯模型**：Runner 无公网入站；拉取与心跳全部经 Cloudflare 隧道（自动 TLS）。
 - **认证**：每 Agent 独立 Bearer token；Server 只存 sha256 哈希；`agent_id` 已存在时 register 需带原 token（防冒领）。
 - **Runner 风险**：GitHub 托管 VM 短暂开放 SSH（`runner:runner`）、公网 IP 会出现在 Actions 日志——仅用于自有 Runner，且生命周期由 Oracle `shutdown` 结束。
+- **管理 API 有意不加认证**（`ADMIN_AUTH_ENABLED=false`）：公网两入口（CF 隧道 + `213.35.122.16:8700` 直连）均可免 token 调用 trigger/exec——设计取舍，仅限临时 runner 场景，使用者已知悉风险；访问日志兜底记录一切调用。
 - **最小权限**：Bootstrap 仓库只放初始化脚本，业务/隧道逻辑一律由 Oracle 任务下发（见协议附录 B）。
 
 ---
