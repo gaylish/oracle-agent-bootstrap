@@ -85,6 +85,11 @@ curl -s http://127.0.0.1:8700/healthz        # {"ok":true}
 - **触发 run**：`POST /api/v1/admin/trigger` `{"count": N}`（默认 1，上限 20）
 - **停止 run**：`POST /api/v1/admin/cancel` `{"run_id":N}` / `{"run_ids":[...]}` / `{"all_in_progress":true}`（GitHub cancel）
 - **在 run 上执行命令**：`POST /api/v1/admin/exec`（单 run/agent）与 `POST /api/v1/admin/exec-many`（多 run / 多 agent / `all_online`）；结果经 `GET /api/v1/admin/tasks/{task_id}` 轮询
+- **Run 生命周期**：runs 表升级为 GitHub Run 生命周期记录（`trigger` 瞬间即建档）
+  - Oracle 状态：`queued`（GitHub 已接受、Job 未开始）→ `provisioning`（Job 已开、Agent 未注册）→ `running`（Agent 已注册）→ `completed / failed / cancelled`（按 GitHub conclusion 归一化）；`provisioning_timeout`（5 分钟无 Agent）
+  - 双层原始字段：`github_status` / `github_conclusion` 与归一化 `status` 并存，不丢 GitHub 原始语义
+  - `exec` 按状态拒绝：queued/provisioning → `409 agent_not_ready`；provisioning_timeout → `409 agent_not_available`；终态 → `409 run_not_active`；404 仅表示"Oracle 从未记录过该 run"
+  - 同步：查询 runs/active 时惰性拉 GitHub 状态回写（无需独立同步服务）
 - **访问日志**：`/opt/oracle-agent/server/data/access.log`（JSON lines；完整 headers + body + 时间，敏感头打码；RotatingFileHandler 10MB×5 轮转；默认跳过 agent 协议请求）
 - **日志查询专用端点**：`GET /api/v1/admin/logs/<LOG_VIEW_TOKEN>`（**Swagger 隐藏**；`?lines/q/path/since/file`；token 走路径，独立于 ADMIN_AUTH_ENABLED；未配 `LOG_VIEW_TOKEN` 则 404；自身访问在日志里路径打码为 `<token>`）
 - 本地查看 token：`sudo grep ORACLE_ADMIN_TOKEN /etc/default/oracle-agent`
